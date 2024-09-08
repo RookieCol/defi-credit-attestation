@@ -1,6 +1,7 @@
 import { createPublicClient, http, getContract } from 'viem';
 import { baseSepolia } from 'viem/chains';
 import { type Address, privateKeyToAccount } from 'viem/accounts';
+import { SignProtocolClient, SpMode, EvmChains } from '@ethsign/sp-sdk';
 
 const walletBalanceAbi = [
     {
@@ -15,56 +16,86 @@ const walletBalanceAbi = [
     },
 ];
 
-/*WalletBalanceProvider is a smart contract or an API endpoint in the Aave protocol
- that provides users with details of their wallet's balances across different tokens */
-
+// WalletBalanceProvider is a smart contract in Aave protocol for querying balances.
 const walletBalanceProvider = '0xdeB02056E277174566A1c425a8e60550142B70A2';
 
-// aUSDC is an Aave-specific token representing the user's deposit of USDC into the Aave protocol.
+// Define token addresses for aUSDC (deposits) and vUSDC (borrowed tokens)
 const aUSDC = '0xf53B60F4006cab2b3C4688ce41fD5362427A2A66';
-// vUSDC represents a variable-rate borrowing position for USDC.
 const vUSDC = '0xe248511Fd529222f349C6Fd92328f6C5cd876Da0';
-
-const USDC = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+const USDC = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 
 const privateKey = process.env['PRIVATE_KEY'] as Address;
 const account = privateKeyToAccount(privateKey);
 
+// Public client to interact with Sepolia network
 const publicClient = createPublicClient({
     chain: baseSepolia,
     transport: http(),
 });
 
+// Contract instance to interact with WalletBalanceProvider
 const contract = getContract({
     address: walletBalanceProvider,
     abi: walletBalanceAbi,
     client: publicClient,
 });
 
+// Function to fetch token balance of a user
 async function fetchBalance(userAddress: Address, asset: Address): Promise<number> {
     try {
         const balance = await contract.read.balanceOf([userAddress, asset]);
-        const readableBalance = Number(balance) / 1_000_000;
+        const readableBalance = Number(balance) / 1_000_000; // Assuming USDC has 6 decimal places
         return readableBalance;
     } catch (error) {
-        console.error('Error fetching aUSDC balance:', error);
+        console.error('Error fetching balance:', error);
         throw error;
     }
 }
-// User's address 
-const userAddress = '0x08C4E4BdAb2473E454B8B2a4400358792786d341';
 
+// Initialize SignProtocol client for schema creation
+const client = new SignProtocolClient(SpMode.OnChain, {
+    chain: EvmChains.baseSepolia,
+    account: privateKeyToAccount(privateKey),
+});
+
+/**
+ * Function to create an attestation for credit score data
+ * @param data Credit score data including on-chain and off-chain scores
+ * https://testnet-scan.sign.global/schema/onchain_evm_84532_0x264
+ * https://docs.sign.global/for-builders/getting-started/index/building-a-simple-notary-platform/attestation-creation
+ */
+async function createAttestationForCreditScore(data: any) {
+    try {
+        const attestation = await client.createAttestation({
+            schemaId: data.schemaId,
+            data: data.data,
+            indexingValue: data.userAddress
+        });
+
+        console.log('Created Attestation:', attestation);
+        return attestation;
+    } catch (error) {
+        console.error('Error creating attestation:', error);
+        throw error;
+    }
+}
+
+/**
+ * Main function to fetch balances and calculate borrowing capacity and utilization ratio.
+ */
 (async () => {
     try {
-        // Fetch balances for aUSDC (deposits) and vUSDC (debt)
+        const userAddress = '0x08C4E4BdAb2473E454B8B2a4400358792786d341';
+
+        // Fetch balances for aUSDC (deposits), vUSDC (borrowed tokens), and USDC
         const aUSDCBalance = await fetchBalance(userAddress, aUSDC);
         const vUSDCBalance = await fetchBalance(userAddress, vUSDC);
-        const usdcBalance = await fetchBalance(userAddress, USDC); // Fetching USDC balance if needed
+        const usdcBalance = await fetchBalance(userAddress, USDC);
 
-        // Borrow capacity calculation
+        // Borrow capacity calculation based on deposits and debt
         const borrowCapacity = (aUSDCBalance * 0.77) - vUSDCBalance;
 
-        // Calculate the value between 0-1
+        // Calculate the value between 0-1, which represents the utilization ratio
         const utilizationRatio = 1 - (vUSDCBalance / (aUSDCBalance + usdcBalance));
         const percentage = utilizationRatio * 100;
 
@@ -76,16 +107,21 @@ const userAddress = '0x08C4E4BdAb2473E454B8B2a4400358792786d341';
             { Token: 'Utilization Percentage', Value: `${percentage.toFixed(2)}%` } // Utilization percentage
         ]);
 
+        const creditScoreData = {
+            schemaId: "0x264",
+            data: [Math.floor(Number(percentage)),0],
+            userAddress,
+        };
+
+
+        console.log(creditScoreData);
+
+
+        // Create an attestation for the credit score data
+        const attestation = await createAttestationForCreditScore(creditScoreData);
+
+        console.log('Successfully created attestation:', attestation);
     } catch (error) {
         console.error('Error:', error);
     }
 })();
-
-
-/* {
-        schemid: credit score
-
-        onchainscore:   int ( 1 - (vtokens/(ausdc+usdc)) ) *  100  (0-1)
-        offchainscore:  int()
-        timestamp: 
-    } */

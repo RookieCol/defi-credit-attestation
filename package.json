@@ -9,6 +9,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@ethsign/sp-sdk": "^0.7.3",
     "viem": "^2.21.3"
   }
 }
